@@ -150,7 +150,7 @@ int main(int argc, char **argv) {
       if (frame_desc) {
         width = frame_desc->wWidth;
         height = frame_desc->wHeight;
-        fps = 10000000 / frame_desc->dwDefaultFrameInterval;
+        fps = (int)(10000000.0 / frame_desc->dwDefaultFrameInterval + 0.5);
       }
 
       printf("\nFirst format: (%4s) %dx%d %dfps\n", format_desc->fourccFormat, width, height, fps);

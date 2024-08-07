@@ -221,7 +221,7 @@ void uvc_print_diag(uvc_device_handle_t *devh, FILE *stream) {
                   frame_desc->dwMinBitRate,
                   frame_desc->dwMaxBitRate,
                   frame_desc->dwMaxVideoFrameBufferSize,
-                  10000000 / frame_desc->dwDefaultFrameInterval);
+                  (int)(10000000.0 / frame_desc->dwDefaultFrameInterval + 0.5));
               if (frame_desc->intervals) {
                 for (interval_ptr = frame_desc->intervals;
                      *interval_ptr;
