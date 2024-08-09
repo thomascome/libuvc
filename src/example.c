@@ -2,11 +2,77 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
+#include <SDL2/SDL.h>
+
+#define SCREEN_WIDTH  1280
+#define SCREEN_HEIGHT 720
+
+// 定义一个用户事件类型
+#define SDL_USER_UPDATE_TEXTURE (SDL_USEREVENT + 1)
+
+typedef struct {
+    AVCodecContext *codec_ctx;
+    SDL_Texture *texture;
+    SDL_Renderer *renderer;
+    struct SwsContext *sws_ctx;
+} H264Context;
+
+typedef struct {
+    const uint8_t* y_plane;
+    const uint8_t* u_plane;
+    const uint8_t* v_plane;
+    int y_pitch;
+    int uv_pitch;
+} YUVPlanes;
+
+void decode_and_render(H264Context *h264_ctx, const uint8_t *data, int size) {
+    AVPacket pkt;
+    av_init_packet(&pkt);
+    pkt.data = (uint8_t *)data;
+    pkt.size = size;
+
+    if (avcodec_send_packet(h264_ctx->codec_ctx, &pkt) < 0) {
+        fprintf(stderr, "Error sending packet to decoder\n");
+        return;
+    }
+
+    AVFrame *frame = av_frame_alloc();
+    while (avcodec_receive_frame(h264_ctx->codec_ctx, frame) >= 0) {
+        // 将解码的帧转换为YUV格式
+        uint8_t *y_plane = (uint8_t *)malloc(SCREEN_WIDTH * SCREEN_HEIGHT);
+        uint8_t *u_plane = (uint8_t *)malloc(SCREEN_WIDTH * SCREEN_HEIGHT / 4);
+        uint8_t *v_plane = (uint8_t *)malloc(SCREEN_WIDTH * SCREEN_HEIGHT / 4);
+
+        uint8_t *dst_data[3] = {y_plane, u_plane, v_plane};
+        int dst_linesize[3] = {SCREEN_WIDTH, SCREEN_WIDTH / 2, SCREEN_WIDTH / 2};
+
+        sws_scale(h264_ctx->sws_ctx, (const uint8_t * const *)frame->data, frame->linesize, 0,
+                  h264_ctx->codec_ctx->height, dst_data, dst_linesize);
+
+
+        YUVPlanes* planes = (YUVPlanes*)malloc(sizeof(YUVPlanes));
+        planes->y_plane = y_plane;
+        planes->u_plane = u_plane;
+        planes->v_plane = v_plane;
+        planes->y_pitch = SCREEN_WIDTH;
+        planes->uv_pitch = SCREEN_WIDTH / 2;
+
+        SDL_Event event;
+        event.type = SDL_USER_UPDATE_TEXTURE;
+        event.user.code = 0;
+        event.user.data1 = h264_ctx;
+        event.user.data2 = planes;
+        SDL_PushEvent(&event);
+    }
+    av_frame_free(&frame);
+}
+
 /* This callback function runs once per frame. Use it to perform any
  * quick processing you need, or have it put the frame into your application's
  * input queue. If this function takes too long, you'll start losing frames. */
-
-static FILE *fp = NULL;
 #define NALU_TYPE_MASK 0x1F
 #define NALU_TYPE_SPS 7
 #define NALU_TYPE_PPS 8
@@ -17,7 +83,7 @@ void cb(uvc_frame_t *frame, void *ptr)
 {
   uvc_frame_t *bgr;
   uvc_error_t ret;
-  enum uvc_frame_format *frame_format = (enum uvc_frame_format *)ptr;
+  H264Context *h264_ctx = (H264Context *)ptr;
 
   static int jpeg_count = 0;
   static const char *H264_FILE = "output.h264";
@@ -31,12 +97,9 @@ void cb(uvc_frame_t *frame, void *ptr)
     return;
   }
 
-  printf("callback! frame_format = %d, width = %d, height = %d, length = %lu, ptr = %p\n",
-         frame->frame_format, frame->width, frame->height, frame->data_bytes, ptr);
+  // printf("callback! frame_format = %d, width = %d, height = %d, length = %lu, ptr = %p\n",
+  //        frame->frame_format, frame->width, frame->height, frame->data_bytes, ptr);
 
-  if (fp == NULL) {
-    fp = fopen(H264_FILE, "wb");
-  }
   uint8_t *byte_data = (uint8_t *)frame->data;
   if (byte_data[0] != 0x00 || byte_data[1] != 0x00 || byte_data[2] != 0x00 || byte_data[3] != 0x01) {
     printf("invalid h264 data found %ld\n", frame->data_bytes);
@@ -48,80 +111,95 @@ void cb(uvc_frame_t *frame, void *ptr)
       if (nalu_type == NALU_TYPE_SPS)
       {
         find_key_frame = 1;
-        printf("find key frame success and start store file\n");
-        fwrite(frame->data, 1, frame->data_bytes, fp);
-        fflush(fp);
+        decode_and_render(h264_ctx, frame->data, frame->data_bytes);
       }
     }
     else {
-      fwrite(frame->data, 1, frame->data_bytes, fp);
-      fflush(fp);
+      decode_and_render(h264_ctx, frame->data, frame->data_bytes);
     }
-  }
-
-  switch (frame->frame_format) {
-  case UVC_FRAME_FORMAT_H264:
-    /* use `ffplay H264_FILE` to play */
-    /* fp = fopen(H264_FILE, "a");
-     * fwrite(frame->data, 1, frame->data_bytes, fp);
-     * fclose(fp); */
-    break;
-  case UVC_COLOR_FORMAT_MJPEG:
-    /* sprintf(filename, "%d%s", jpeg_count++, MJPEG_FILE);
-     * fp = fopen(filename, "w");
-     * fwrite(frame->data, 1, frame->data_bytes, fp);
-     * fclose(fp); */
-    break;
-  case UVC_COLOR_FORMAT_YUYV:
-    /* Do the BGR conversion */
-    ret = uvc_any2bgr(frame, bgr);
-    if (ret) {
-      uvc_perror(ret, "uvc_any2bgr");
-      uvc_free_frame(bgr);
-      return;
-    }
-    break;
-  default:
-    break;
   }
 
   if (frame->sequence % 30 == 0) {
     printf(" * got image %u\n",  frame->sequence);
   }
 
-  /* Call a user function:
-   *
-   * my_type *my_obj = (*my_type) ptr;
-   * my_user_function(ptr, bgr);
-   * my_other_function(ptr, bgr->data, bgr->width, bgr->height);
-   */
-
-  /* Call a C++ method:
-   *
-   * my_type *my_obj = (*my_type) ptr;
-   * my_obj->my_func(bgr);
-   */
-
-  /* Use opencv.highgui to display the image:
-   * 
-   * cvImg = cvCreateImageHeader(
-   *     cvSize(bgr->width, bgr->height),
-   *     IPL_DEPTH_8U,
-   *     3);
-   *
-   * cvSetData(cvImg, bgr->data, bgr->width * 3); 
-   *
-   * cvNamedWindow("Test", CV_WINDOW_AUTOSIZE);
-   * cvShowImage("Test", cvImg);
-   * cvWaitKey(10);
-   *
-   * cvReleaseImageHeader(&cvImg);
-   */
-
   uvc_free_frame(bgr);
 }
 
+// 处理用户事件的回调
+void handle_user_event(SDL_Event* event) {
+    // 从 event->user.data1 和 event->user.data2 获取数据
+    H264Context *h264_ctx = (H264Context *)event->user.data1;
+    YUVPlanes *planes = (YUVPlanes *)event->user.data2;
+
+      SDL_UpdateYUVTexture(h264_ctx->texture, NULL,
+                            planes->y_plane, planes->y_pitch,
+                            planes->u_plane, planes->uv_pitch,
+                            planes->v_plane, planes->uv_pitch);
+
+      // 渲染图像
+      SDL_RenderClear(h264_ctx->renderer);
+      SDL_RenderCopy(h264_ctx->renderer, h264_ctx->texture, NULL, NULL);
+      SDL_RenderPresent(h264_ctx->renderer);
+
+      free(planes->y_plane);
+      free(planes->u_plane);
+      free(planes->v_plane);
+      free(planes);
+}
+
+// 主线程中的事件循环
+void main_loop() {
+    SDL_Event event;
+    while (SDL_WaitEvent(&event)) {
+        if (event.type == SDL_USER_UPDATE_TEXTURE) {
+            handle_user_event(&event);
+        } else if (event.type == SDL_QUIT) {
+            break;
+        }
+        // 处理其他事件
+    }
+}
+
 int main(int argc, char **argv) {
+
+  // 初始化FFmpeg和SDL
+  avformat_network_init();
+
+  SDL_Init(SDL_INIT_VIDEO);
+
+  SDL_Window *window = SDL_CreateWindow("H.264 Player",
+                                        SDL_WINDOWPOS_UNDEFINED,
+                                        SDL_WINDOWPOS_UNDEFINED,
+                                        SCREEN_WIDTH, SCREEN_HEIGHT,
+                                        0);
+
+  SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
+  SDL_Texture *texture = SDL_CreateTexture(renderer,
+                                            SDL_PIXELFORMAT_YV12,
+                                            SDL_TEXTUREACCESS_STREAMING,
+                                            SCREEN_WIDTH, SCREEN_HEIGHT);
+
+  // 初始化H.264解码器
+  AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+  AVCodecContext *codec_ctx = avcodec_alloc_context3(codec);
+  codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+  codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+  codec_ctx->thread_count = 1;
+  avcodec_open2(codec_ctx, codec, NULL);
+  codec_ctx->width = 1920;
+  codec_ctx->height = 1080;
+  codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+  struct SwsContext *sws_ctx = sws_getContext(codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
+                                SCREEN_WIDTH, SCREEN_HEIGHT, AV_PIX_FMT_YUV420P,
+                                SWS_BILINEAR, NULL, NULL, NULL);
+  H264Context h264_ctx = {
+      .codec_ctx = codec_ctx,
+      .texture = texture,
+      .renderer = renderer,
+      .sws_ctx = sws_ctx,
+  };
+
   uvc_context_t *ctx;
   uvc_device_t *dev;
   uvc_device_handle_t *devh;
@@ -205,35 +283,14 @@ int main(int argc, char **argv) {
         /* Start the video stream. The library will call user function cb:
          *   cb(frame, (void *) 12345)
          */
-        res = uvc_start_streaming(devh, &ctrl, cb, (void *) 12345, 0);
+        res = uvc_start_streaming(devh, &ctrl, cb, &h264_ctx, 0);
 
         if (res < 0) {
           uvc_perror(res, "start_streaming"); /* unable to start stream */
         } else {
           puts("Streaming...");
 
-          /* enable auto exposure - see uvc_set_ae_mode documentation */
-          puts("Enabling auto exposure ...");
-          const uint8_t UVC_AUTO_EXPOSURE_MODE_AUTO = 2;
-          res = uvc_set_ae_mode(devh, UVC_AUTO_EXPOSURE_MODE_AUTO);
-          if (res == UVC_SUCCESS) {
-            puts(" ... enabled auto exposure");
-          } else if (res == UVC_ERROR_PIPE) {
-            /* this error indicates that the camera does not support the full AE mode;
-             * try again, using aperture priority mode (fixed aperture, variable exposure time) */
-            puts(" ... full AE not supported, trying aperture priority mode");
-            const uint8_t UVC_AUTO_EXPOSURE_MODE_APERTURE_PRIORITY = 8;
-            res = uvc_set_ae_mode(devh, UVC_AUTO_EXPOSURE_MODE_APERTURE_PRIORITY);
-            if (res < 0) {
-              uvc_perror(res, " ... uvc_set_ae_mode failed to enable aperture priority mode");
-            } else {
-              puts(" ... enabled aperture priority auto exposure mode");
-            }
-          } else {
-            uvc_perror(res, " ... uvc_set_ae_mode failed to enable auto exposure mode");
-          }
-
-          sleep(10); /* stream for 10 seconds */
+          main_loop();
 
           /* End the stream. Blocks until last callback is serviced */
           uvc_stop_streaming(devh);
@@ -255,9 +312,12 @@ int main(int argc, char **argv) {
   uvc_exit(ctx);
   puts("UVC exited");
 
-  if (fp != NULL) {
-    fclose(fp);
-  }
+  sws_freeContext(h264_ctx.sws_ctx);
+  avcodec_free_context(&codec_ctx);
+  SDL_DestroyTexture(texture);
+  SDL_DestroyRenderer(renderer);
+  SDL_DestroyWindow(window);
+  SDL_Quit();
 
   return 0;
 }
