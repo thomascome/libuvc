@@ -5,15 +5,24 @@
 /* This callback function runs once per frame. Use it to perform any
  * quick processing you need, or have it put the frame into your application's
  * input queue. If this function takes too long, you'll start losing frames. */
-void cb(uvc_frame_t *frame, void *ptr) {
+
+static FILE *fp = NULL;
+#define NALU_TYPE_MASK 0x1F
+#define NALU_TYPE_SPS 7
+#define NALU_TYPE_PPS 8
+#define NALU_TYPE_IDR 5
+int find_key_frame = 0;
+
+void cb(uvc_frame_t *frame, void *ptr)
+{
   uvc_frame_t *bgr;
   uvc_error_t ret;
   enum uvc_frame_format *frame_format = (enum uvc_frame_format *)ptr;
-  /* FILE *fp;
-   * static int jpeg_count = 0;
-   * static const char *H264_FILE = "iOSDevLog.h264";
-   * static const char *MJPEG_FILE = ".jpeg";
-   * char filename[16]; */
+
+  static int jpeg_count = 0;
+  static const char *H264_FILE = "output.h264";
+  // static const char *MJPEG_FILE = ".jpeg";
+  // char filename[16];
 
   /* We'll convert the image from YUV/JPEG to BGR, so allocate space */
   bgr = uvc_allocate_frame(frame->width * frame->height * 3);
@@ -23,7 +32,32 @@ void cb(uvc_frame_t *frame, void *ptr) {
   }
 
   printf("callback! frame_format = %d, width = %d, height = %d, length = %lu, ptr = %p\n",
-    frame->frame_format, frame->width, frame->height, frame->data_bytes, ptr);
+         frame->frame_format, frame->width, frame->height, frame->data_bytes, ptr);
+
+  if (fp == NULL) {
+    fp = fopen(H264_FILE, "wb");
+  }
+  uint8_t *byte_data = (uint8_t *)frame->data;
+  if (byte_data[0] != 0x00 || byte_data[1] != 0x00 || byte_data[2] != 0x00 || byte_data[3] != 0x01) {
+    printf("invalid h264 data found %ld\n", frame->data_bytes);
+  }
+  else {
+    if (!find_key_frame) {
+      uint8_t nalu_type = byte_data[4] & NALU_TYPE_MASK;
+      printf("nalu_type is %d\n", nalu_type);
+      if (nalu_type == NALU_TYPE_SPS)
+      {
+        find_key_frame = 1;
+        printf("find key frame success and start store file\n");
+        fwrite(frame->data, 1, frame->data_bytes, fp);
+        fflush(fp);
+      }
+    }
+    else {
+      fwrite(frame->data, 1, frame->data_bytes, fp);
+      fflush(fp);
+    }
+  }
 
   switch (frame->frame_format) {
   case UVC_FRAME_FORMAT_H264:
@@ -221,6 +255,9 @@ int main(int argc, char **argv) {
   uvc_exit(ctx);
   puts("UVC exited");
 
+  if (fp != NULL) {
+    fclose(fp);
+  }
+
   return 0;
 }
-
