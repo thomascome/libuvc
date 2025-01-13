@@ -77,9 +77,9 @@ void decode_and_render(H264Context *h264_ctx, const uint8_t *data, int size) {
 #define NALU_TYPE_SPS 7
 #define NALU_TYPE_PPS 8
 #define NALU_TYPE_IDR 5
-int find_key_frame = 0;
+int find_key_frame = 1;
 
-void cb(uvc_frame_t *frame, void *ptr)
+void cb(struct uvc_frame *frame, void *ptr)
 {
   uvc_frame_t *bgr;
   uvc_error_t ret;
@@ -97,8 +97,8 @@ void cb(uvc_frame_t *frame, void *ptr)
     return;
   }
 
-  // printf("callback! frame_format = %d, width = %d, height = %d, length = %lu, ptr = %p\n",
-  //        frame->frame_format, frame->width, frame->height, frame->data_bytes, ptr);
+  printf("callback! frame_format = %d, width = %d, height = %d, length = %lu, ptr = %p\n",
+         frame->frame_format, frame->width, frame->height, frame->data_bytes, ptr);
 
   uint8_t *byte_data = (uint8_t *)frame->data;
   if (byte_data[0] != 0x00 || byte_data[1] != 0x00 || byte_data[2] != 0x00 || byte_data[3] != 0x01) {
@@ -187,8 +187,8 @@ int main(int argc, char **argv) {
   codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
   codec_ctx->thread_count = 1;
   avcodec_open2(codec_ctx, codec, NULL);
-  codec_ctx->width = 1920;
-  codec_ctx->height = 1080;
+  codec_ctx->width = 1280;
+  codec_ctx->height = 720;
   codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
   struct SwsContext *sws_ctx = sws_getContext(codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
                                 SCREEN_WIDTH, SCREEN_HEIGHT, AV_PIX_FMT_YUV420P,
@@ -249,12 +249,15 @@ int main(int argc, char **argv) {
 
       switch (format_desc->bDescriptorSubtype) {
       case UVC_VS_FORMAT_MJPEG:
+        printf("frame format is mjpeg\n");
         frame_format = UVC_COLOR_FORMAT_MJPEG;
         break;
       case UVC_VS_FORMAT_FRAME_BASED:
+        printf("frame format is h264\n");
         frame_format = UVC_FRAME_FORMAT_H264;
         break;
       default:
+        printf("frame format is yuyv\n");
         frame_format = UVC_FRAME_FORMAT_YUYV;
         break;
       }
@@ -263,9 +266,8 @@ int main(int argc, char **argv) {
         width = frame_desc->wWidth;
         height = frame_desc->wHeight;
         fps = (int)(10000000.0 / frame_desc->dwDefaultFrameInterval + 0.5);
+        printf("First format: (%4s) %dx%d %dfps\n", format_desc->fourccFormat, width, height, fps);
       }
-
-      printf("\nFirst format: (%4s) %dx%d %dfps\n", format_desc->fourccFormat, width, height, fps);
 
       /* Try to negotiate first stream profile */
       res = uvc_get_stream_ctrl_format_size(
